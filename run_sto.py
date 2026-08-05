@@ -4,83 +4,99 @@ RUN STOCHASTIC MODEL
 import numpy as np
 import torch
 import torch.nn.functional as F
-from QGM import QGM
+from QGM import QGM, Parameters
 torch.backends.cudnn.deterministic = True
 
 ################################################################
 # SET RUN PARAMETERS
 ################################################################
-# General param.
-regime = 'non_eddy_resolving' # 'eddy_permitting' or 'non_eddy_resolving'
-restart_file = 'lastday_5km.npz' # set '' if start from zero states
-run_years = 20 # run length (years)
+#
+regime = 'eddy_permitting' # 'eddy_resolving' or 'eddy_permitting' or 'non_eddy_resolving'
+#restart_file = 'lastday_5km.npz' # set '' if start from zero states
+restart_file = ''
+run_years = 10 # run length (years)
 freq_plot_days = 15 # plotting frequency (days)
-freq_save_days = 0*15 # data saving frequency (days)
+freq_save_days = 15 # data saving frequency (days)
 freq_log_days = 5 # logout frequency (days)
-output_dir = f'./run/sto/{regime}' # output directory
+output_dir = './output' # output directory
+
+bulk_frc = 'bulk_frc'
 
 # Random param. for noise
 rand_model = 'enstrophy_preserve' # diff. random conservation: 'energy_preserve' or 'enstrophy_preserve'
-base_noise = 'dmd' # type of noise: 'eof' (stationary in time) or 'dmd' (periodic in time) or 'dwt' (flow-dependent)
-filename_drift = 'cyclic_drift' # Girsanov drift (nudging) to reproduce the eastwards jet
+#base_noise = 'dwt' # type of noise: 'fourier' (GMC)
+base_noise = 'fourier' # type of noise: 'fourier' (GMC)
 
 ################################################################
 # SET MODEL (DOES NOT REQUIRE ALTERING IN THE FOLLOWING)
 ################################################################
-# Regime-dependent param.
+#clea
+if regime == 'eddy_resolving':
+    # High-resolution model which fully resolved mesoscale eddies
+    nx, ny = 768+1, 960+1 # corresponding to a 5km horizontal grid spacing
+    dt = 1800. # timestep (s)
+    a4 = 2e9 # biharmonic viscosity (m^4/s)
+             # Here, nondim. Munk scale (a4/beta)^(1/5)/dx = 2
 if regime == 'eddy_permitting':
     # Mid-resolution model which partially resolved mesoscale eddies
+    #nx, ny = 240+1, 240+1 # dx = dy = 20km
+    nx, ny = 256, 256 # dx = dy = 20km
     dx = dy = 20e3 # horizontal grid spacing (km)
-    dt = 7200. # timestep (s) 
-    a4 = 5e10 # biharmonic viscosity (m^4/s)
-              # Here, nondim. Munk scale (a4/beta)^(1/5)/dx = 1
+    dt = 7200. 
+    a4 = 5e10 # Munk scale = 1 
 if regime == 'non_eddy_resolving':
     # Low-resolution model which didn't resolve mesoscale eddies
-    dx = dy = 40e3
+    nx, ny = 96+1, 120+1 # 40 km
     dt = 14400.
     a4 = 5e11 # Munk scale = 0.8
-Lx, Ly = 3840e3, 4800e3 # domain size (km) (DO NOT ALTER!)
-nx, ny = int(Lx//dx)+1, int(Ly//dy)+1 # P-grid size 
-file_drift = filename_drift + f'_{int(1e-3*dx)}km.npz' 
+
 if base_noise in ('eof','dmd'):
-    file_modes = base_noise + f'_{int(1e-3*dx)}km.npz'
+    file_modes = base_noise + f'.npz'
 else:
     file_modes = None
 
-# Other param.
+Lx, Ly = 4800e3, 4800e3 # domain size (km)
+A_sp = 0.024
+#C_tau = 1 / (np.sqrt(2) * (10 ** 3 / max(Lx,Ly)) ** (1 / 3))
+C_tau = 1
+print('The value of Ctau is', C_tau)
+
 param = {
-    'n_ens': 2, # ensemble size
+    'n_ens': 1, # ensemble size
     'nl': 3, # number of layers
+    'Lx': Lx, # zonal length (m)
+    'Ly': Ly, # meridional length (m)
     'H': [350., 750., 2900.], # layer thickness (m)
     'g_prime': [0.025, 0.0125], # reduced gravities (m/s^2)
     'f0': 9.37456e-5, # Coriolis param. (s^-1) at 40deg (north) lat.
-    'beta': 1.7536e-11, # Coriolis gradient (m^-1/s)
+    'beta': 0, # Coriolis gradient (m^-1/s)
     'delta_ek': 2.0, # bottom Ekman layer thickness (m)
-    'tau0': 2.0e-5, # wind stress magnitude (m/s^2)
+    'tau0': 2.0e-4, # wind stress magnitude (m/s^2)
     'a2': 0., # laplacian diffusion coef (m^2/s)
     'alpha_bc': 0.2, # boundary condition coef. (non-dim.)
-    'Lx': Lx, # zonal length (m)
-    'Ly': Ly, # meridional length (m)
     'nx': nx, # zonal pressure grid points
     'ny': ny, # meridional pressure grid points
     'dt': dt, # timestep (s) 
     'a4': a4, # biharmonic viscosity (m^4/s)
+    'A_sp' : A_sp, # amplitude of tau (k) spectra
+    'C_tau' : C_tau, # tau (k) amplitude 
     'device': 'cuda' if torch.cuda.is_available() else 'cpu', # 'cuda' or 'cpu'
 }
+
 param.update({
         'rand_model': rand_model, 
         'base_noise': base_noise, 
-        'file_drift': file_drift, # Girsanov drift file (nudging)
         'file_modes': file_modes, # Noise modes (used for EOF/DMD noise)
-        'wave_level': 1, # wavelet decomposition levels (only used for DWT nosie)
-        'filt_width': 5, # filter width to build local fluctuations (only used for DWT nosie)
+        'wave_level': 4, # wavelet decomposition levels (only used for DWT nosie)
+        'noise_level': 500, # energy injected to fluctuations (only used for DWT nosie)
 })
 
 print('==================================================')
 print(f'run stochastic {regime} model'.upper())
 print('==================================================\n')
 print(param)
-qgm = QGM(param)
+cfg = Parameters()
+qgm = QGM(param, cfg)
 
 ################################################################
 # INITIALIZATION
@@ -120,17 +136,21 @@ if freq_save > 0:
 # Initialize figures
 if freq_plot > 0:
     import matplotlib.pyplot as plt
+     
+
+    plt.rcParams['text.usetex'] = False
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['font.sans-serif'] = ['Arial']
+
     plt.ion()
     f,a = plt.subplots(1,2)
-    a[0].set_title(r'Surface dynamic pressure ($p$)')
-    #a[1].set_title(r'Surface potential vorticity ($q/f_0$)')
-    a[1].set_title(r'Surface relative vorticity ($\omega/f_0$)')
+    a[0].set_title('Surface dynamic pressure ($p$)')
+    a[1].set_title('Surface potential vorticity ($q/f_0$)')
     n_years, n_days = int(t//(365*24*3600)), int(t%(365*24*3600)//(24*3600))
     p = (qgm.p[0,0]).cpu().numpy()
-    #q = (qgm.q_over_f0[0,0]).cpu().numpy()
-    q = (qgm.laplacian_h(qgm.p, qgm.zfbc)[0,0] / (qgm.f0*qgm.dx)**2).cpu().numpy()
+    q = (qgm.q_over_f0[0,0]).cpu().numpy()
     a[0].imshow(p.T, cmap='RdBu_r', origin='lower', vmin=-5, vmax=5, animated=True)
-    a[1].imshow(q.T, cmap='RdBu_r', origin='lower', vmin=-.1, vmax=.1, animated=True)
+    a[1].imshow(q.T, cmap='RdBu_r', origin='lower', vmin=-.5, vmax=.5, animated=True)
     plt.suptitle(f't = {n_years:03d} yrs {n_days:03d} days')
     plt.tight_layout()
     plt.pause(0.1)
@@ -139,7 +159,8 @@ if freq_plot > 0:
 # TIME-STEPPING
 ################################################################
 #
-for n in range(1,n_steps+1): 
+
+for n in range(1,n_steps+1):
     qgm.noise_generator(t)
     qgm.step()
     t += dt
@@ -151,9 +172,8 @@ for n in range(1,n_steps+1):
         n_years, n_days = int(t//(365*24*3600)), int(t%(365*24*3600)//(24*3600))
         p = (qgm.p[0,0]).cpu().numpy()
         q = (qgm.q_over_f0[0,0]).cpu().numpy()
-        q = (qgm.laplacian_h(qgm.p, qgm.zfbc)[0,0] / (qgm.f0*qgm.dx)**2).cpu().numpy()
         a[0].imshow(p.T, cmap='RdBu_r', origin='lower', vmin=-5, vmax=5, animated=True)
-        a[1].imshow(q.T, cmap='RdBu_r', origin='lower', vmin=-.1, vmax=.1, animated=True)
+        a[1].imshow(q.T, cmap='RdBu_r', origin='lower', vmin=-.5, vmax=.5, animated=True)
         plt.suptitle(f't = {n_years:03d} yrs {n_days:03d} days')
         plt.pause(0.5)
 
@@ -167,7 +187,8 @@ for n in range(1,n_steps+1):
     if freq_save > 0 and n > n_steps_save and n % freq_save == 0:
         filename = os.path.join(output_dir, f'pq_{n_steps_save}.npz')
         np.savez(filename, t=t/(86400*365), p=qgm.p.cpu().numpy().astype('float32'), \
-                           q=qgm.q_over_f0.cpu().numpy().astype('float32'))
+                           q=qgm.q_over_f0.cpu().numpy().astype('float32'),		 ut=qgm.u.cpu().numpy().astype('float32'),vt=qgm.v.cpu().numpy().astype('float32'), un=qgm.u_noise.cpu().numpy().astype('float32'),vn=qgm.v_noise.cpu().numpy().astype('float32'))        
+
         n_steps_save += 1
         if n % (10*freq_save) == 0:
             print(f'saved p to {filename}')
