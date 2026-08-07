@@ -14,9 +14,10 @@ import torch
 import torch.nn.functional as F
 from pytorch_wavelets import DWTForward, DWTInverse 
 from dataclasses import dataclass
+import torch
 
 ##################### GMC noise part #####################
-import torch
+
 
 def filtre_image_k_torch(image, dx, dy, k_coupure, passe_haut=True):
     """
@@ -387,13 +388,14 @@ def image_valide(image, forme_attendue=None):
 
 
 def radial_average(field_2d, k, k_bins):
-    """Moyenne radiale d'un champ 2D (ex: |FFT|^2) sur des anneaux de k."""
+    """Somme radiale d'un champ 2D (ex: |FFT|^2) sur des couronnes de k,
+    normalisée par dk pour obtenir une densité spectrale E(k)."""
     dk = k_bins[1] - k_bins[0]
     E_1d = np.zeros(len(k_bins))
     for idx, k_i in enumerate(k_bins):
         mask = (k >= k_i) & (k < k_i + dk)
         if mask.any():
-            E_1d[idx] = field_2d[mask].mean()
+            E_1d[idx] = field_2d[mask].sum() / dk
     return E_1d
 
 def moduler_bruit(image, bruit, k_c, alpha, dk=1.0):
@@ -415,7 +417,7 @@ def moduler_bruit(image, bruit, k_c, alpha, dk=1.0):
     KX, KY = np.meshgrid(kx, ky, indexing='ij')
     k = np.sqrt(KX**2 + KY**2)
 
-    k_max = k.max()
+    k_max = kx.max()
     k_bins = np.arange(0, k_max, dk)
 
     # --- FFT de l'image et du bruit ---
@@ -429,9 +431,6 @@ def moduler_bruit(image, bruit, k_c, alpha, dk=1.0):
 
     E_orig_1d  = radial_average(E_orig_2d,  k, k_bins)
     E_bruit_1d = radial_average(E_bruit_2d, k, k_bins)
-    # Correction pour éviter des valeurs minuscules à grand k ?
-    E_bruit_1d[-2] = E_bruit_1d[-3]
-    E_bruit_1d[-1] = E_bruit_1d[-2]
 
     # --- spectre théorique cible, raccordé en k_c ---
     idx_c = np.searchsorted(k_bins, k_c)
