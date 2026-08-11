@@ -4,7 +4,7 @@ RUN DETERMINISTIC MODEL
 import numpy as np
 import torch
 import torch.nn.functional as F
-from QGM import QGM
+from QGM import QGM, Parameters
 torch.backends.cudnn.deterministic = True
 
 ################################################################
@@ -12,12 +12,15 @@ torch.backends.cudnn.deterministic = True
 ################################################################
 #
 regime = 'eddy_permitting' # 'eddy_resolving' or 'eddy_permitting' or 'non_eddy_resolving'
-restart_file = 'lastday_5km.npz' # set '' if start from zero states
+#restart_file = 'lastday_5km.npz' # set '' if start from zero states
+restart_file = ''
 run_years = 10 # run length (years)
 freq_plot_days = 15 # plotting frequency (days)
 freq_save_days = 15 # data saving frequency (days)
 freq_log_days = 5 # logout frequency (days)
 output_dir = './output' # output directory
+
+bulk_frc = 'bulk_frc'
 
 ################################################################
 # SET MODEL (DOES NOT REQUIRE ALTERING IN THE FOLLOWING)
@@ -31,7 +34,8 @@ if regime == 'eddy_resolving':
              # Here, nondim. Munk scale (a4/beta)^(1/5)/dx = 2
 if regime == 'eddy_permitting':
     # Mid-resolution model which partially resolved mesoscale eddies
-    nx, ny = 192+1, 240+1 # dx = dy = 20km
+    nx, ny = 256, 256 # dx = dy = 20km
+    dx = dy = 20e3 # horizontal grid spacing (km)
     dt = 7200. 
     a4 = 5e10 # Munk scale = 1 
 if regime == 'non_eddy_resolving':
@@ -40,23 +44,31 @@ if regime == 'non_eddy_resolving':
     dt = 14400.
     a4 = 5e11 # Munk scale = 0.8
 
+Lx, Ly = 4800e3, 4800e3 # domain size (km)
+A_sp = 10e-3
+C_tau = 1 / (np.sqrt(2) * (10 ** 3 / max(Lx,Ly)) ** (1 / 3))
+#C_tau = 400
+print('The value of Ctau is', C_tau)
+
 param = {
     'n_ens': 1, # ensemble size
     'nl': 3, # number of layers
-    'Lx': 3840.0e3, # zonal length (m)
-    'Ly': 4800.0e3, # meridional length (m)
+    'Lx': Lx, # zonal length (m)
+    'Ly': Ly, # meridional length (m)
     'H': [350., 750., 2900.], # layer thickness (m)
     'g_prime': [0.025, 0.0125], # reduced gravities (m/s^2)
     'f0': 9.37456e-5, # Coriolis param. (s^-1) at 40deg (north) lat.
-    'beta': 1.7536e-11, # Coriolis gradient (m^-1/s)
+    'beta': 0, # Coriolis gradient (m^-1/s)
     'delta_ek': 2.0, # bottom Ekman layer thickness (m)
-    'tau0': 2.0e-5, # wind stress magnitude (m/s^2)
+    'tau0': 2.0e-4, # wind stress magnitude (m/s^2)
     'a2': 0., # laplacian diffusion coef (m^2/s)
     'alpha_bc': 0.2, # boundary condition coef. (non-dim.)
     'nx': nx, # zonal pressure grid points
     'ny': ny, # meridional pressure grid points
     'dt': dt, # timestep (s) 
     'a4': a4, # biharmonic viscosity (m^4/s)
+    'A_sp' : A_sp, # amplitude of tau (k) spectra
+    'C_tau' : C_tau, # tau (k) amplitude 
     'device': 'cuda' if torch.cuda.is_available() else 'cpu', # 'cuda' or 'cpu'
 }
 
@@ -64,7 +76,8 @@ print('==================================================')
 print(f'run deterministic {regime} model'.upper())
 print('==================================================\n')
 print(param)
-qgm = QGM(param)
+cfg = Parameters()
+qgm = QGM(param, cfg)
 
 ################################################################
 # INITIALIZATION
@@ -104,6 +117,12 @@ if freq_save > 0:
 # Initialize figures
 if freq_plot > 0:
     import matplotlib.pyplot as plt
+     
+
+    plt.rcParams['text.usetex'] = False
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['font.sans-serif'] = ['Arial']
+
     plt.ion()
     f,a = plt.subplots(1,2)
     a[0].set_title('Surface dynamic pressure ($p$)')
@@ -147,7 +166,8 @@ for n in range(1,n_steps+1):
     if freq_save > 0 and n > n_steps_save and n % freq_save == 0:
         filename = os.path.join(output_dir, f'pq_{n_steps_save}.npz')
         np.savez(filename, t=t/(86400*365), p=qgm.p.cpu().numpy().astype('float32'), \
-                           q=qgm.q_over_f0.cpu().numpy().astype('float32'))
+                           q=qgm.q_over_f0.cpu().numpy().astype('float32'),		 ut=qgm.u.cpu().numpy().astype('float32'),vt=qgm.v.cpu().numpy().astype('float32'))        
+
         n_steps_save += 1
         if n % (10*freq_save) == 0:
             print(f'saved p to {filename}')
