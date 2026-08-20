@@ -118,9 +118,12 @@ def moduler_bruit(image, bruit, k_c, alpha, dk=1.0):
 
     # --- facteur de modulation M(k) = sqrt(R / E_bruit), en évitant les divisions par 0 ---
     M_1d = np.zeros_like(R_1d)
-    #valid = E_bruit_1d > 1e-9
+    valid = E_bruit_1d > 1e-9
+    ratio = np.zeros_like(R_1d)
+    np.divide(R_1d, E_bruit_1d, out=ratio, where=valid)
     #M_1d[valid] = np.sqrt(R_1d[valid] / E_bruit_1d[valid])
-    M_1d = np.sqrt(R_1d / E_bruit_1d)
+    #M_1d = np.sqrt(R_1d / E_bruit_1d)
+    M_1d = np.sqrt(ratio)
     
     # si le bruit n'a aucune énergie à un k donné mais qu'on en voudrait -> impossible de créer
     # de l'énergie avec un facteur multiplicatif, on laisse M=0 
@@ -133,9 +136,10 @@ def moduler_bruit(image, bruit, k_c, alpha, dk=1.0):
 
     bruit_modulé = np.real(np.fft.ifft2(B_hat_modulé))
 
-    image_finale = image + bruit_modulé
+    #image_finale = image + bruit_modulé
 
-    return image_finale, bruit_modulé, (k_bins, E_orig_1d, E_bruit_1d, E_theo_1d, R_1d, M_1d)
+    #return image_finale, bruit_modulé, (k_bins, E_orig_1d, E_bruit_1d, E_theo_1d, R_1d, M_1d)
+    return bruit_modulé
 
 ##################### QGM #####################
 
