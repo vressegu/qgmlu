@@ -264,6 +264,93 @@ def arakawa_adv(q, u, v):
     Fy = 0.25 * (v + torch.roll(v, -1, dims=-1)) * (q + torch.roll(q, -1, dims=-1))
     return -((Fx - torch.roll(Fx, 1, dims=-2)) + (Fy - torch.roll(Fy, 1, dims=-1)))
 
+def initial_condition_p(ens,
+    nl,
+    nx,
+    ny,
+    L,
+    B0,
+    H,
+    patm,
+    device="cpu",
+    dtype=torch.float32
+):
+    """
+    Initial condition for buoyancy from Resseguier et al. 2020 NPG
+
+    b(x,y,0) =
+        0.2 B0 cos(2*pi/L * (x+y))
+        + F(x-x00, y-y00)
+        + F(x-x10, y-y10)
+        - F(x-x01, y-y01)
+        - F(x-x11, y-y11)
+
+    with
+
+        F(x,y) = B0 exp[
+            -1/2 * (15/L)^2 * (x^2+y^2)^2
+        ]
+
+    Periodic domain [0,Lx] x [0,Ly].
+
+    Supposing a hydrostatic balance, extending to the multilayer case, the initial pressure is then p(x,y,0) = p_atm + b(x,y,0) * H[i-1] for layer i>0
+    """
+
+    #B0 = 1.0
+    #patm = 10e5
+
+    x = torch.arange(
+        nx) * (L / nx)
+
+    y = torch.arange(
+        ny) * (L / ny)
+
+    Y, X = torch.meshgrid(y, x, indexing="ij")
+
+    # Large-scale sinusoidal component
+    b0 = (
+        0.2 * B0
+        * torch.cos(
+            2.0 * torch.pi / L * (X + Y)
+        )
+    )
+
+    # Localized structure F
+    def F(Xloc, Yloc):
+
+        r2 = Xloc**2 + Yloc**2
+
+        return B0 * torch.exp(
+            -0.5 * (15.0 / L)**2 * r2**2
+        )
+
+    # Four centres
+    x00 = L / 4.0
+    y00 = L / 4.0
+
+    x10 = 3.0 * L / 4.0
+    y10 = L / 4.0
+
+    x01 = L / 4.0
+    y01 = 3.0 * L / 4.0
+
+    x11 = 3.0 * L / 4.0
+    y11 = 3.0 * L / 4.0
+
+    b0 += F(X - x00, Y - y00)
+    b0 += F(X - x10, Y - y10)
+    b0 -= F(X - x01, Y - y01)
+    b0 -= F(X - x11, Y - y11)
+
+    p0 = torch.full((ens, nl, nx, ny), patm, device=device, dtype=dtype)
+
+    for i in range(1, nl):
+        p0[:, i, :, :] = (
+            patm
+            + b0 * H[i - 1]
+        )
+    return p0
+
 ### Periodicity update ###
 
 def ddx_periodic(f, dx):
@@ -370,42 +457,6 @@ class QGM:
         self.jac_coef = 1. / self.f0
         self.bottom_friction_coef = self.delta_ek / (2*np.abs(self.f0)*(-self.H[-1]))
           
-        #Shell isotropic frc
-        k = np.fft.fftfreq(self.nx, d=self.Lx / (2 * np.pi * self.nx))
-        kx, ky = np.meshgrid(k, k, indexing='ij')
-        k2 = kx**2 + ky**2
-        k_mag = np.sqrt(k2)
-        
-        print(np.min(k_mag), np.max(k_mag))
-        k_min, k_max = 5e-6, 5e-5  # Forcing shell
-        forcing_mask = (k_mag >= k_min) & (k_mag <= k_max)
-
-        # Random complex forcing with Gaussian distribution
-        np.random.seed()  # or set a specific seed for reproducibility
-        fx_hat = (np.random.randn(self.nx, self.nx) + 1j * np.random.randn(self.ny, self.ny)) * forcing_mask
-        fy_hat = (np.random.randn(self.ny, self.ny) + 1j * np.random.randn(self.ny, self.ny)) * forcing_mask
-
-        # Avoid division by zero
-        k2_safe = np.copy(k2)
-        k2_safe[k2_safe == 0] = 1.0
-
-        # Projection
-        #kf_dot_f = kx * fx_hat + ky * fy_hat
-        #fx_hat -= kx * kf_dot_f / k2_safe
-        #fy_hat -= ky * kf_dot_f / k2_safe
-
-        energy_injection = np.sum(np.abs(fx_hat)**2 + np.abs(fy_hat)**2)
-        desired_energy = 1.0  # arbitrary units
-        scaling = np.sqrt(desired_energy / (energy_injection + 1e-10))
-        fx_hat *= scaling
-        fy_hat *= scaling
-
-        fx = np.fft.ifft2(fx_hat).real
-        fy = np.fft.ifft2(fy_hat).real
-        tau_pf = np.stack((fx, fy), axis=-1)
-        tau_pf = torch.as_tensor(tau_pf, dtype=torch.float64, device=self.device)
-        self.wind_forcing = (curl_wind_periodic(tau_pf, self.dx, self.dy) / (self.f0 * self.H[0])).unsqueeze(0)
-        
         # init matrices
         self.compute_A_matrix()
         self.compute_layer_to_mode_matrices()
@@ -413,7 +464,9 @@ class QGM:
 
         # initialize pressure p and potential voritcity q
         self.p_shape = (self.n_ens, self.nl, self.nx, self.ny)
-        self.p = torch.zeros(self.p_shape, **self.arr_kwargs)
+        #self.p = torch.zeros(self.p_shape, **self.arr_kwargs)
+        self.p = initial_condition_p(self.n_ens, self.nl, self.nx, self.ny, self.Lx, 0.01, self.H, 1.0, device=self.device, dtype=torch.float64)
+        #print(("Initial pressure p: min", self.p.min().item(), "max", self.p.max().item()))
         self.compute_q_over_f0_from_p()
         
         # Stochastic transport model
@@ -470,7 +523,6 @@ class QGM:
             self.betay_on_u = self.interp_y(betay) # interpolated on u-points (periodic, full shape)
             self.betay_on_v = self.interp_x(betay) # on v-points (periodic, full shape)
 
-
     def compute_A_matrix(self):
         self.A = torch.zeros((self.nl,self.nl), **self.arr_kwargs)
         self.A[0,0] = 1./(self.H[0]*self.g_prime[0])
@@ -482,6 +534,72 @@ class QGM:
         self.A[-1,-1] = 1./(self.H[self.nl-1]*self.g_prime[self.nl-2])
         self.A[-1,-2] = -1./(self.H[self.nl-1]*self.g_prime[self.nl-2])
 
+    def compute_deterministic_forcing(self):
+        """Deterministic forcing S for the bottom layer, periodic domain. 
+        Hard set parameters for now, but could be made configurable if needed.
+        """
+
+        nu_f = 1e1
+        A_f = 10e-8
+        tau_f = 10e8
+
+        b = (self.p[...,0,:,:] - self.p[...,1,:,:]) / self.H[0]  # bottom layer pressure difference (nl-1 to nl)
+
+        kx = 2.0 * torch.pi * torch.fft.fftfreq(
+            self.nx, d=self.dx, device=b.device
+        )
+        ky = 2.0 * torch.pi * torch.fft.fftfreq(
+            self.ny, d=self.dy, device=b.device
+        )
+
+        KY, KX = torch.meshgrid(ky, kx, indexing="ij")
+        k2 = KX**2 + KY**2
+       
+        b_hat = torch.fft.fft2(b)
+
+        # Spectral Delta^4 operator :
+        # Delta -> -k^2
+        # Delta^4 -> (-k^2)^4 = k^8
+        delta4_b_hat = k2**4 * b_hat
+        #print(("Deterministic forcing: min", torch.fft.ifft2(delta4_b_hat).min().item(), "max", torch.fft.ifft2(delta4_b_hat).max().item()))
+
+        S_hat = (
+            -nu_f * delta4_b_hat
+            - b_hat / tau_f
+        )
+
+        x = torch.arange(
+            self.nx,
+            device=b.device,
+            dtype=b.dtype
+        ) * self.dx
+
+        y = torch.arange(
+            self.ny,
+            device=b.device,
+            dtype=b.dtype
+        ) * self.dy
+
+        Y, X = torch.meshgrid(y, x, indexing="ij")
+
+        kfx = 3 * (2 * np.pi) / self.Lx
+        kfy = 2 * (2 * np.pi) / self.Ly
+        
+        forcing_physical = (
+            A_f
+            * torch.sin(kfx * X)
+            * torch.sin(kfy * Y)
+        )
+
+        forcing_hat = torch.fft.fft2(forcing_physical)
+
+        S_hat = S_hat + forcing_hat
+        S = torch.fft.ifft2(S_hat).real
+
+        # Check stationarity of the forcing: 
+        #print(("Deterministic forcing S: min", S.min().item(), "max", S.max().item()))
+
+        return S
 
     def compute_layer_to_mode_matrices(self):
         """Matrices to change from layers to modes."""
@@ -556,6 +674,9 @@ class QGM:
             rhs += self.diff_coef * self.laplacian_periodic(delta2_p)
         if self.a4 != 0.:
             rhs -= self.hyperdiff_coef * self.laplacian_periodic(self.laplacian_periodic(delta2_p))
+
+        #self.wind_forcing = self.generate_wind_forcing() 
+        self.wind_forcing = self.compute_deterministic_forcing()
         rhs[...,0,:,:] += self.wind_forcing
         rhs[...,-1:,:,:] += self.bottom_friction_coef * self.laplacian_periodic(self.p[...,-1:,:,:])
 
