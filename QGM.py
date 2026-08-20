@@ -102,10 +102,10 @@ def moduler_bruit(image, bruit, k_c, alpha, dk=1.0):
     E_orig_2d  = np.abs(I_hat)**2
     E_bruit_2d = np.abs(B_hat)**2
 
-    print(np.shape(E_bruit_2d))
-
     E_orig_1d  = radial_average(E_orig_2d,  k, k_bins)
     E_bruit_1d = radial_average(E_bruit_2d, k, k_bins)
+
+    #print('E bruit', E_bruit_1d.max(), E_bruit_1d.min(), E_bruit_1d.mean())
 
     # --- spectre théorique cible, raccordé en k_c ---
     idx_c = np.searchsorted(k_bins, k_c)
@@ -610,7 +610,6 @@ class QGM:
         self.Cl2m = torch.diag(1./torch.diag(L.T @ R)) @ L.T
         self.Cm2l = R
 
-
     def compute_helmoltz_matrices(self):
         """Spectral Helmholtz operator (one eigenvalue field per vertical mode),
         for periodic FFT-based elliptic inversion. Replaces the DST-based
@@ -621,7 +620,6 @@ class QGM:
         self.helmholtz_fft = self.laplace_fft.reshape((1, self.nx, self.ny)) / self.f0**2 - self.lambd.reshape((self.nl, 1, 1))
         self.helmholtz_fft.unsqueeze_(0)  # (1, nl, nx, ny), broadcastable over ensemble dim
 
-
     def compute_q_over_f0_from_p(self):
         """Potential vorticity from pressure, periodic domain.
         NOTE: laplacian_periodic already divides by dx**2/dy**2 internally
@@ -630,14 +628,12 @@ class QGM:
         Ap = torch.einsum('kl,...lij->...kij', self.A, self.p)
         self.q_over_f0 = laplacian_periodic(self.p, self.dx, self.dy) / self.f0**2 - Ap + (self.beta / self.f0) * (self.y - self.y0)
 
-
     def compute_velocity(self, psi):
         """Compute geostrophic velocities (u,v) from streamfunction psi."""
         """Geostrophic velocities under periodic BCs."""
         u = -ddy_periodic(psi, self.dy)
         v = ddx_periodic(psi, self.dx)
         return u, v
-
 
     def reset_p(self, p):
         """Reset pressure from a restart p (periodic domain: no boundaries to
@@ -662,7 +658,6 @@ class QGM:
             self.p = p
         # Update potential vorticity
         self.compute_q_over_f0_from_p()
-
 
     def advection_rhs(self):
         """Advection diffusion RHS for vorticity, over the whole periodic domain
@@ -699,7 +694,6 @@ class QGM:
             rhs += self.rand_adv_tracer(self.q_over_f0, self.u_noise/self.dx, self.v_noise/self.dy) 
         return rhs
 
-
     def compute_time_derivatives(self):
         """Advect vorticity and invert the periodic Helmholtz equation for the
         pressure tendency. No boundary patch-up and no mass-conservation
@@ -711,7 +705,6 @@ class QGM:
                            self.inverse_elliptic_fft(rhs_helmholtz, self.helmholtz_fft))
 
         return dq_over_f0, dp
-
 
     def step(self):
         #print('self.q_over_f0', self.q_over_f0.shape)
@@ -738,7 +731,6 @@ class QGM:
         
 
     def noise_generator(self, time=None):
-        
         # GMC-based noise
         if self.base_noise == 'fourier':
 
@@ -796,6 +788,7 @@ class QGM:
             self.psi_noise = self.idwt2((psi_low, psi_high))
             self.u_noise, self.v_noise = self.compute_velocity(self.psi_noise)
             print(np.shape(self.u_noise), np.shape(self.v_noise))
+
     def rand_adv_momentum(self):
         """Random advection of momentum using centered flux form, periodic BC.
         NOTE: the original version had a real shape-mismatch bug (checked
