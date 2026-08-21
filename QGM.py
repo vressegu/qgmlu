@@ -440,7 +440,8 @@ class QGM:
         self.C_tau = param['C_tau']
         self.device = param['device']
         self.arr_kwargs = {'dtype':torch.float64, 'device':self.device}
-        self.u = None
+        #self.u = torch.full((1, self.nl, self.nx, self.ny), torch.inf, **self.arr_kwargs)
+        #self.v = torch.full((1, self.nl, self.nx, self.ny), torch.inf, **self.arr_kwargs)
 
         # grid (periodic: nx points span [0, Lx), no duplicated wrap-around point)
         self.dx = self.Lx / self.nx
@@ -732,29 +733,33 @@ class QGM:
 	# Optional: store them for later use
         self.u = u
         self.v = v
-        
 
+    def generate_random_field_full(self):
+        _, _, _, self.psi_noise_full, *_ =  run_simulation(self.cfg)
+
+    def noise_generator_t_c(self, n):
+        psi_temp1 = moduler_bruit((self.p/self.f0).detach().cpu().numpy()[0,0,:,:], self.psi_noise_full[n,:,:,0], k_c=11, alpha=11/3)
+        psi_temp2 = moduler_bruit((self.p/self.f0).detach().cpu().numpy()[0,1,:,:], self.psi_noise_full[n,:,:,1], k_c=11, alpha=11/3)
+        psi_temp3 = moduler_bruit((self.p/self.f0).detach().cpu().numpy()[0,2,:,:], self.psi_noise_full[n,:,:,2], k_c=11, alpha=11/3)
+
+        psi_noise_temp = torch.from_numpy(np.stack((psi_temp1, psi_temp2, psi_temp3), axis=0)).unsqueeze(0)
+
+        self.u_noise, self.v_noise = self.compute_velocity(psi_noise_temp)
+        
     def noise_generator(self, time=None):
         # GMC-based noise
         if self.base_noise == 'fourier':
 
-            u_noise_temp, v_noise_temp, *_ = run_simulation(self.cfg)
+            _, _, _, self.psi_noise_temp, *_ =  run_simulation(self.cfg)
 
-            self.u_noise = torch.from_numpy(u_noise_temp).float().permute(0, 3, 1, 2)
-            self.v_noise = torch.from_numpy(v_noise_temp).float().permute(0, 3, 1, 2)
+            #
+            psi_temp1 = moduler_bruit((self.p/self.f0).detach().cpu().numpy()[0,0,:,:], self.psi_noise_full[0,:,:,0], k_c=11, alpha=11/3)
+            psi_temp2 = moduler_bruit((self.p/self.f0).detach().cpu().numpy()[0,1,:,:], self.psi_noise_full[0,:,:,1], k_c=11, alpha=11/3)
+            psi_temp3 = moduler_bruit((self.p/self.f0).detach().cpu().numpy()[0,2,:,:], self.psi_noise_full[0,:,:,2], k_c=11, alpha=11/3)
 
-            self.u_noise /= torch.std(self.u_noise)
-            self.v_noise /= torch.std(self.v_noise)
+            psi_noise_temp = torch.from_numpy(np.stack((psi_temp1, psi_temp2, psi_temp3), axis=0)).unsqueeze(0)
 
-            self.u_noise = filtre_image_k_torch(self.u_noise, dx=2/256, dy=2/256, k_coupure=110, passe_haut=True)
-            self.v_noise = filtre_image_k_torch(self.v_noise, dx=2/256, dy=2/256, k_coupure=110, passe_haut=True)
-
-            #self.u_noise = moduler_bruit(self.u , self.u_noise, 110, alpha=5/3)
-            #self.v_noise = moduler_bruit(self.v , self.v_noise, 110, alpha=5/3)
-
-            #print(self.u_noise.mean(), self.v_noise.mean())
-            #self.u_noise, self.v_noise, *_ = run_simulation(self.cfg)
-            #print(np.shape(self.u_noise), np.shape(self.v_noise))
+            self.u_noise, self.v_noise = self.compute_velocity(psi_noise_temp)
 
         # Wavelet-based noise
         if self.base_noise == 'dwt':

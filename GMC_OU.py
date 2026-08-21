@@ -213,10 +213,10 @@ class Parameters(SimulationConfig):
 def run_simulation(cfg):
 
     # ---- init ----
-    V_x = cfg.zeroField()
-    V_y = cfg.zeroField()
+    #V_x = cfg.zeroField()
+    #V_y = cfg.zeroField()
     #V_z = cfg.zeroField()
-    #stream_z = cfg.zeroField()
+    stream_z = cfg.zeroField()
     #epsi = cfg.zeroField()
 
     lepsi_hat =  np.sqrt(cfg.S2) * fftnoise(cfg, scalar = True)
@@ -224,7 +224,7 @@ def run_simulation(cfg):
         B_hat = CMG_noise(lepsi_hat,cfg)
     else:
         B_hat = fftnoise(cfg)
-    V_x[0,:], V_y[0,:], V_z, stream_z, epsi\
+    V_x, V_y, V_z, stream_z[0,:], epsi\
         = CMG_velocity(B_hat,lepsi_hat,cfg, intermittency = (not cfg.new_spTimeGMC) )
 
     for t in range(cfg.N_steps-1):
@@ -236,12 +236,10 @@ def run_simulation(cfg):
         # ---- OU process for epsilon ----
         lepsi_hat = cfg.exp_e  * lepsi_hat + cfg.noise_e * np.sqrt(cfg.S2) * fftnoise(cfg, scalar = True)
 
-        V_x[t+1,:], V_y[t+1,:], V_z, stream_z, epsi \
+        V_x, V_y, V_z, stream_z[t+1,:], epsi \
             = CMG_velocity(B_hat,lepsi_hat,cfg, intermittency = (not cfg.new_spTimeGMC) )
 
     return V_x, V_y, V_z, stream_z, epsi
-
-
 
 def fftnoise(cfg, scalar = False):
     xi = cfg.whiteNoise(scalar)
